@@ -3,13 +3,14 @@ import hashlib
 import json
 import logging
 import os
-import tempfile
 import subprocess
+import tempfile
 from pathlib import Path
 
 import imageio_ffmpeg
 from aiohttp import web
 from pyrogram import Client, filters
+from pyrogram.errors import RPCError
 from pyrogram.types import Message
 from pymongo import MongoClient
 
@@ -27,7 +28,7 @@ log = logging.getLogger("file-forward-bot")
 
 
 # ============================================================
-# ENVIRONMENT VARIABLES
+# ENVIRONMENT
 # ============================================================
 
 API_ID = int(os.environ["API_ID"])
@@ -43,16 +44,28 @@ SOURCE_CHATS = {
     if x.strip()
 }
 
-DESTINATION_CHAT = int(os.environ["DESTINATION_CHAT"])
+DESTINATION_CHAT = int(
+    os.environ["DESTINATION_CHAT"]
+)
 
 ADMIN_IDS = {
     int(x.strip())
-    for x in os.environ.get("ADMIN_IDS", "").split(",")
+    for x in os.environ.get(
+        "ADMIN_IDS",
+        "",
+    ).split(",")
     if x.strip()
 }
 
-DEFAULT_PREFIX = os.getenv("PREFIX", "")
-DEFAULT_CAPTION = os.getenv("CAPTION", "{caption}")
+DEFAULT_PREFIX = os.getenv(
+    "PREFIX",
+    "",
+)
+
+DEFAULT_CAPTION = os.getenv(
+    "CAPTION",
+    "{caption}",
+)
 
 
 # ============================================================
@@ -128,14 +141,6 @@ files_col.create_index(
 
 
 # ============================================================
-# ADMIN CHECK
-# ============================================================
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
-# ============================================================
 # SETTINGS
 # ============================================================
 
@@ -177,11 +182,16 @@ def save_settings(data):
     )
 
 
+def is_admin(user_id):
+
+    return user_id in ADMIN_IDS
+
+
 # ============================================================
-# MEDIA DETECTION
+# MEDIA
 # ============================================================
 
-def extract_media(message: Message):
+def extract_media(message):
 
     if message.document:
         return message.document, "document"
@@ -204,11 +214,11 @@ def extract_media(message: Message):
     return None, None
 
 
-# ============================================================
-# FILE NAME
-# ============================================================
-
-def original_name(message, media, kind):
+def original_name(
+    message,
+    media,
+    kind,
+):
 
     if kind == "document":
         return media.file_name or "file"
@@ -231,7 +241,14 @@ def original_name(message, media, kind):
     return "file"
 
 
-def apply_prefix(filename, prefix):
+# ============================================================
+# PREFIX
+# ============================================================
+
+def apply_prefix(
+    filename,
+    prefix,
+):
 
     if not prefix:
         return filename
@@ -249,13 +266,19 @@ def render_caption(
     filename,
 ):
 
-    original_caption = message.caption or ""
+    original_caption = (
+        message.caption or ""
+    )
 
     values = {
         "filename": filename,
         "caption": original_caption,
-        "chat_id": str(message.chat.id),
-        "message_id": str(message.id),
+        "chat_id": str(
+            message.chat.id
+        ),
+        "message_id": str(
+            message.id
+        ),
     }
 
     try:
@@ -293,7 +316,9 @@ def ffmpeg_executable():
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def media_can_have_metadata(path):
+def media_can_have_metadata(
+    path,
+):
 
     extensions = {
         ".mp4",
@@ -315,33 +340,33 @@ def media_can_have_metadata(path):
         ".wav",
     }
 
-    return path.suffix.lower() in extensions
+    return (
+        path.suffix.lower()
+        in extensions
+    )
 
 
-def build_ffmpeg_metadata_args(metadata):
+def build_metadata_args(
+    metadata,
+):
 
     args = []
-
-
-    # -------------------------
-    # GENERAL
-    # -------------------------
 
     general = metadata.get(
         "general",
         {},
     )
 
-    general_fields = {
-        "title": general.get("title"),
-        "artist": general.get("artist"),
-        "album": general.get("album"),
-        "comment": general.get("comment"),
-        "encoder": general.get("encoder"),
-        "description": general.get("description"),
-    }
+    for key in [
+        "title",
+        "artist",
+        "album",
+        "comment",
+        "encoder",
+        "description",
+    ]:
 
-    for key, value in general_fields.items():
+        value = general.get(key)
 
         if value:
 
@@ -350,10 +375,6 @@ def build_ffmpeg_metadata_args(metadata):
                 f"{key}={value}",
             ]
 
-
-    # -------------------------
-    # VIDEO
-    # -------------------------
 
     video = metadata.get(
         "video",
@@ -375,47 +396,27 @@ def build_ffmpeg_metadata_args(metadata):
         ]
 
 
-    # -------------------------
-    # AUDIO
-    # -------------------------
-
     audio = metadata.get(
         "audio",
         {},
     )
 
-    if audio.get("title"):
+    for key in [
+        "title",
+        "artist",
+        "album",
+        "language",
+    ]:
 
-        args += [
-            "-metadata:s:a:0",
-            f"title={audio['title']}",
-        ]
+        value = audio.get(key)
 
-    if audio.get("artist"):
+        if value:
 
-        args += [
-            "-metadata:s:a:0",
-            f"artist={audio['artist']}",
-        ]
+            args += [
+                "-metadata:s:a:0",
+                f"{key}={value}",
+            ]
 
-    if audio.get("album"):
-
-        args += [
-            "-metadata:s:a:0",
-            f"album={audio['album']}",
-        ]
-
-    if audio.get("language"):
-
-        args += [
-            "-metadata:s:a:0",
-            f"language={audio['language']}",
-        ]
-
-
-    # -------------------------
-    # SUBTITLE
-    # -------------------------
 
     subtitle = metadata.get(
         "subtitle",
@@ -436,7 +437,6 @@ def build_ffmpeg_metadata_args(metadata):
             f"language={subtitle['language']}",
         ]
 
-
     return args
 
 
@@ -446,7 +446,7 @@ def process_metadata(
     metadata,
 ):
 
-    args = build_ffmpeg_metadata_args(
+    args = build_metadata_args(
         metadata
     )
 
@@ -504,7 +504,7 @@ def process_metadata(
 
 
 # ============================================================
-# SHA256
+# DUPLICATES
 # ============================================================
 
 async def sha256_file(path):
@@ -534,11 +534,9 @@ async def sha256_file(path):
     )
 
 
-# ============================================================
-# DUPLICATE CHECK
-# ============================================================
-
-def already_seen(unique_id):
+def already_seen(
+    unique_id,
+):
 
     return bool(
         files_col.find_one(
@@ -552,7 +550,9 @@ def already_seen(unique_id):
     )
 
 
-def already_hashed(sha256):
+def already_hashed(
+    sha256,
+):
 
     return bool(
         files_col.find_one(
@@ -573,14 +573,6 @@ def mark_seen(
     source_message,
 ):
 
-    document = {
-        "unique_id": unique_id,
-        "sha256": sha256,
-        "source_chat": source_chat,
-        "source_message": source_message,
-    }
-
-
     try:
 
         files_col.update_one(
@@ -589,23 +581,27 @@ def mark_seen(
             },
 
             {
-                "$setOnInsert": document
+                "$setOnInsert": {
+                    "unique_id": unique_id,
+                    "sha256": sha256,
+                    "source_chat": source_chat,
+                    "source_message": source_message,
+                }
             },
 
             upsert=True,
         )
 
-
     except Exception as error:
 
         log.warning(
-            "Database error: %s",
+            "MongoDB error: %s",
             error,
         )
 
 
 # ============================================================
-# SEND FILE
+# SEND
 # ============================================================
 
 async def send_processed(
@@ -615,6 +611,13 @@ async def send_processed(
     caption,
     kind,
 ):
+
+    log.info(
+        "Sending %s to %s",
+        filename,
+        DESTINATION_CHAT,
+    )
+
 
     if kind in {
         "video",
@@ -680,9 +683,140 @@ async def start_handler(
     message,
 ):
 
+    log.info(
+        "/start received from %s",
+        message.from_user.id,
+    )
+
     await message.reply_text(
-        "🤖 File Forward Bot is running.\n\n"
+        "🤖 File Forward Bot is running!\n\n"
         "Automatic forwarding is enabled."
+    )
+
+
+# ============================================================
+# /CHECK
+# ============================================================
+
+@app.on_message(
+    filters.command("check")
+    & filters.private
+)
+async def check_handler(
+    client,
+    message,
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        await message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+
+    text = "🔍 BOT CHECK\n\n"
+
+
+    # ----------------------------------------
+    # Source check
+    # ----------------------------------------
+
+    text += "SOURCE CHANNELS:\n"
+
+
+    for chat_id in SOURCE_CHATS:
+
+        try:
+
+            chat = await client.get_chat(
+                chat_id
+            )
+
+            text += (
+                f"✅ {chat_id}\n"
+                f"   {chat.title or chat.first_name or 'Unknown'}\n"
+            )
+
+            log.info(
+                "Source access OK: %s (%s)",
+                chat_id,
+                chat.title,
+            )
+
+        except Exception as error:
+
+            text += (
+                f"❌ {chat_id}\n"
+                f"   {error}\n"
+            )
+
+            log.exception(
+                "Source access failed: %s",
+                chat_id,
+            )
+
+
+    # ----------------------------------------
+    # Destination check
+    # ----------------------------------------
+
+    text += "\nDESTINATION:\n"
+
+
+    try:
+
+        chat = await client.get_chat(
+            DESTINATION_CHAT
+        )
+
+        text += (
+            f"✅ {DESTINATION_CHAT}\n"
+            f"   {chat.title or chat.first_name or 'Unknown'}\n"
+        )
+
+        log.info(
+            "Destination access OK: %s (%s)",
+            DESTINATION_CHAT,
+            chat.title,
+        )
+
+    except Exception as error:
+
+        text += (
+            f"❌ {DESTINATION_CHAT}\n"
+            f"   {error}\n"
+        )
+
+        log.exception(
+            "Destination access failed."
+        )
+
+
+    # ----------------------------------------
+    # FFmpeg
+    # ----------------------------------------
+
+    text += "\nFFMPEG:\n"
+
+
+    if ffmpeg_available():
+
+        text += "✅ Available"
+
+    else:
+
+        text += "❌ Not available"
+
+
+    text += "\n\nSend a new file to the source channel after this check."
+
+
+    await message.reply_text(
+        text
     )
 
 
@@ -709,7 +843,7 @@ async def settings_handler(
     settings = get_settings()
 
 
-    metadata_status = (
+    status = (
         "SET"
         if settings["metadata_enabled"]
         else "NOT SET"
@@ -722,7 +856,7 @@ async def settings_handler(
 
         "╭\n"
 
-        f"┊ METADATA: {metadata_status}\n"
+        f"┊ METADATA: {status}\n"
 
         "╰ Description: Metadata Is Information "
         "Added To Streams "
@@ -822,14 +956,15 @@ async def setcaption_handler(
 
 
     await message.reply_text(
+
         "✅ Caption saved.\n\n"
 
         "Available variables:\n"
-
         "{filename}\n"
         "{caption}\n"
         "{chat_id}\n"
         "{message_id}"
+
     )
 
 
@@ -1000,7 +1135,7 @@ async def resetduplicates_handler(
 
 
 # ============================================================
-# AUTOMATIC FILE FORWARDING
+# DEBUG: LOG EVERY GROUP/CHANNEL MESSAGE
 # ============================================================
 
 @app.on_message(
@@ -1012,10 +1147,37 @@ async def auto_forward(
     message,
 ):
 
+    log.info(
+        "MESSAGE RECEIVED | chat_id=%s | message_id=%s | type=%s",
+        message.chat.id,
+        message.id,
+        message.media,
+    )
+
+
+    # ----------------------------------------
+    # Source filter
+    # ----------------------------------------
+
     if message.chat.id not in SOURCE_CHATS:
+
+        log.info(
+            "Ignoring message from non-source chat: %s",
+            message.chat.id,
+        )
 
         return
 
+
+    log.info(
+        "SOURCE MESSAGE MATCHED: %s",
+        message.id,
+    )
+
+
+    # ----------------------------------------
+    # Media
+    # ----------------------------------------
 
     media, kind = extract_media(
         message
@@ -1024,11 +1186,21 @@ async def auto_forward(
 
     if not media:
 
+        log.info(
+            "Source message has no supported media."
+        )
+
         return
 
 
+    log.info(
+        "MEDIA FOUND | kind=%s",
+        kind,
+    )
+
+
     # ----------------------------------------
-    # Telegram file_unique_id check
+    # Telegram duplicate ID
     # ----------------------------------------
 
     unique_id = getattr(
@@ -1046,7 +1218,7 @@ async def auto_forward(
         ):
 
             log.info(
-                "Duplicate skipped: %s",
+                "DUPLICATE SKIPPED | unique_id=%s",
                 unique_id,
             )
 
@@ -1082,6 +1254,13 @@ async def auto_forward(
     )
 
 
+    log.info(
+        "FILE=%s | OUTPUT=%s",
+        source_filename,
+        filename,
+    )
+
+
     # ----------------------------------------
     # Temporary directory
     # ----------------------------------------
@@ -1112,6 +1291,11 @@ async def auto_forward(
             # Download
             # --------------------------------
 
+            log.info(
+                "Downloading file..."
+            )
+
+
             downloaded = (
                 await client.download_media(
                     message,
@@ -1125,7 +1309,7 @@ async def auto_forward(
             if not downloaded:
 
                 log.error(
-                    "Download failed."
+                    "DOWNLOAD FAILED"
                 )
 
                 return
@@ -1136,12 +1320,24 @@ async def auto_forward(
             )
 
 
+            log.info(
+                "Download complete: %s",
+                source_path,
+            )
+
+
             # --------------------------------
-            # SHA256 duplicate check
+            # SHA256
             # --------------------------------
 
             sha256 = await sha256_file(
                 source_path
+            )
+
+
+            log.info(
+                "SHA256=%s",
+                sha256,
             )
 
 
@@ -1150,6 +1346,9 @@ async def auto_forward(
                 sha256,
             ):
 
+                log.info(
+                    "DUPLICATE SKIPPED | SHA256"
+                )
 
                 if unique_id:
 
@@ -1161,25 +1360,15 @@ async def auto_forward(
                         message.id,
                     )
 
-
-                log.info(
-                    "SHA256 duplicate skipped."
-                )
-
-
                 return
 
 
             # --------------------------------
-            # Final file
+            # Metadata
             # --------------------------------
 
             final_path = source_path
 
-
-            # --------------------------------
-            # Metadata processing
-            # --------------------------------
 
             if (
                 settings["metadata_enabled"]
@@ -1190,6 +1379,10 @@ async def auto_forward(
                     source_path
                 )
             ):
+
+                log.info(
+                    "Applying metadata..."
+                )
 
 
                 success = (
@@ -1214,12 +1407,12 @@ async def auto_forward(
 
                     log.warning(
                         "Metadata failed. "
-                        "Sending original."
+                        "Original file will be sent."
                     )
 
 
             # --------------------------------
-            # Upload to destination
+            # SEND
             # --------------------------------
 
             await send_processed(
@@ -1232,7 +1425,7 @@ async def auto_forward(
 
 
             # --------------------------------
-            # Save duplicate record
+            # SAVE DUPLICATE RECORD
             # --------------------------------
 
             await asyncio.to_thread(
@@ -1252,15 +1445,36 @@ async def auto_forward(
 
 
             log.info(
-                "Successfully forwarded: %s",
+                "================================="
+            )
+
+            log.info(
+                "FORWARD SUCCESS"
+            )
+
+            log.info(
+                "FILE: %s",
                 filename,
             )
 
+            log.info(
+                "================================="
+            )
 
-        except Exception:
+
+        except RPCError as error:
 
             log.exception(
-                "File processing failed."
+                "TELEGRAM ERROR: %s",
+                error,
+            )
+
+
+        except Exception as error:
+
+            log.exception(
+                "FILE PROCESSING ERROR: %s",
+                error,
             )
 
 
@@ -1356,6 +1570,11 @@ async def main():
     log.info(
         "DESTINATION: %s",
         DESTINATION_CHAT,
+    )
+
+    log.info(
+        "ADMIN IDS: %s",
+        ADMIN_IDS,
     )
 
     log.info(
